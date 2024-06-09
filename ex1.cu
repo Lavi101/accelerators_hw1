@@ -101,7 +101,7 @@ struct task_serial_context *task_serial_init()
 {
     auto context = new task_serial_context;
 
-    cudaMalloc((void**)(context->all_in), IMG_WIDTH * IMG_WIDTH);
+    CUDA_CHECK(cudaMalloc((void**)(context->all_in), IMG_WIDTH * IMG_WIDTH));
     CUDA_CHECK(cudaMalloc((void**)(context->all_out), IMG_WIDTH * IMG_WIDTH));
     CUDA_CHECK(cudaMalloc((void**)(context->maps), TILE_COUNT * TILE_COUNT * HIST_SIZE));
     CUDA_CHECK(cudaMalloc((void**)(context->hist), TILE_COUNT * TILE_COUNT * HIST_SIZE * sizeof(int)));
@@ -141,7 +141,7 @@ void task_serial_process(struct task_serial_context *context, uchar *images_in, 
 
         process_image_kernel<<<1,threads_in_block>>>(context->all_in,context->all_out,context->maps,context->hist);
 
-        CUDA_CHECK((cudaMemcpy(context->all_out, (images_out + i * IMG_SIZE), IMG_SIZE, cudaMemcpyDeviceToHost)));
+        CUDA_CHECK((cudaMemcpy((images_out + i * IMG_SIZE), context->all_out, IMG_SIZE, cudaMemcpyDeviceToHost)));
     }
 
 }
@@ -157,10 +157,77 @@ void task_serial_free(struct task_serial_context *context)
     free(context);
 }
 
+
+/////////////////BULK PROCESS/////////////////
+__global__ void bulk_process_image_kernel(uchar *all_in, uchar *all_out, uchar *maps,int *hist) { //TODO:
+    int tid=threadIdx.x;
+    int bid=blockIdx.x;
+
+    //int hist[TILE_COUNT][TILE_COUNT][HIST_SIZE];
+
+    // Each thread would calculate the histogram contribution
+    // of a single row of length T in a specific tile.
+
+    // Calculate offset of this thread in the image pixels array
+    int imgID = bid;
+    int tileID = tid / TILE_WIDTH;
+    int rowInTile = tid % TILE_WIDTH;
+
+    int numberOfTilesInRowImg = IMG_WIDTH / TILE_WIDTH;
+    int gridRow = tileID / numberOfTilesInRowImg;
+    int gridCol = tileID % numberOfTilesInRowImg;
+
+    int offset_in_img = IMG_WIDTH * TILE_WIDTH * gridRow +
+     IMG_WIDTH * rowInTile + TILE_WIDTH * gridCol + imgID * IMG_SIZE;
+
+    // Pass on tile row and update histogram
+    // We'll use maps as a histogram in the meanwhile
+    for(int i=0;i<TILE_WIDTH;i++) {
+        int pixelValue = all_in[offset_in_img+i];
+        atomicAdd(((hist) + imgID * TILE_COUNT * TILE_COUNT * HIST_SIZE 
+        + gridRow * numberOfTilesInRowImg * HIST_SIZE + gridCol * HIST_SIZE + pixelValue),1);
+    }
+
+    __syncthreads();
+
+    // Make the histogram into a map by only the first thread in every tile
+    // TODO: make sure. cause it won't be parallelized
+    if(rowInTile == 0) {
+        // Now make the histogram a CDF, by running prefix_sum
+        prefix_sum(((hist) + imgID * TILE_COUNT * TILE_COUNT * HIST_SIZE 
+        + gridRow * numberOfTilesInRowImg * HIST_SIZE + gridCol * HIST_SIZE),HIST_SIZE);
+
+        // Perform map calculation for each tile
+        map_calculation(((hist) + imgID * TILE_COUNT * TILE_COUNT * HIST_SIZE
+        + gridRow * numberOfTilesInRowImg * HIST_SIZE + gridCol * HIST_SIZE),HIST_SIZE);
+    }
+
+    // Now we copy hist values to maps
+    for (int i=0;i<TILE_COUNT;i++) {
+        for (int j=0;j<TILE_COUNT;j++) {
+            for (int n=0;n<HIST_SIZE;n++) {
+                    maps[imgID * TILE_COUNT * TILE_COUNT * HIST_SIZE 
+                    + i * TILE_COUNT * HIST_SIZE + j * HIST_SIZE + n] = (unsigned char)(
+                        hist[imgID * TILE_COUNT * TILE_COUNT * HIST_SIZE
+                        + i * TILE_COUNT * HIST_SIZE + j * HIST_SIZE + n]);
+            }
+        }
+    }
+
+    __syncthreads();
+
+
+    interpolate_device(maps, all_in, all_out);
+    return; 
+}
+
+
 /* Bulk GPU context struct with necessary CPU / GPU pointers to process all the images */
 struct gpu_bulk_context {
-    // TODO define bulk-GPU memory buffers
-};
+    uchar *all_in;
+    uchar *all_out;
+    uchar *maps;
+    int *hist;};
 
 /* Allocate GPU memory for all the input images, output images, and maps.
  * 
@@ -169,7 +236,11 @@ struct gpu_bulk_context *gpu_bulk_init()
 {
     auto context = new gpu_bulk_context;
 
-    //TODO: allocate GPU memory for all the input images, output images, and maps
+    CUDA_CHECK(cudaMalloc((void**)(context->all_in), IMG_WIDTH * IMG_WIDTH * N_IMAGES));
+    CUDA_CHECK(cudaMalloc((void**)(context->all_out), IMG_WIDTH * IMG_WIDTH * N_IMAGES));
+    CUDA_CHECK(cudaMalloc((void**)(context->maps), TILE_COUNT * TILE_COUNT * HIST_SIZE * N_IMAGES));
+    CUDA_CHECK(cudaMalloc((void**)(context->hist), TILE_COUNT * TILE_COUNT * HIST_SIZE * sizeof(int) * N_IMAGES));
+
 
     return context;
 }
@@ -178,15 +249,24 @@ struct gpu_bulk_context *gpu_bulk_init()
  * provided output host array */
 void gpu_bulk_process(struct gpu_bulk_context *context, uchar *images_in, uchar *images_out)
 {
-    //TODO: copy all input images from images_in to the GPU memory you allocated
-    //TODO: invoke a kernel with N_IMAGES threadblocks, each working on a different image
-    //TODO: copy output images from GPU memory to images_out
+    // calculate the number of threads in one image
+    int threads_in_block = TILE_WIDTH * TILE_COUNT * TILE_COUNT;
+
+    CUDA_CHECK((cudaMemcpy(context->all_in, images_in, (N_IMAGES * IMG_SIZE), cudaMemcpyHostToDevice)));
+
+    process_image_kernel<<<N_IMAGES,threads_in_block>>>(context->all_in,context->all_out,context->maps,context->hist);
+
+    CUDA_CHECK((cudaMemcpy(images_out, context->all_out, (N_IMAGES * IMG_SIZE), cudaMemcpyDeviceToHost)));
+    
 }
 
 /* Release allocated resources for the bulk GPU implementation. */
 void gpu_bulk_free(struct gpu_bulk_context *context)
 {
-    //TODO: free resources allocated in gpu_bulk_init
+    CUDA_CHECK(cudaFree((void**)(context->all_in)));
+    CUDA_CHECK(cudaFree((void**)(context->all_out)));
+    CUDA_CHECK(cudaFree((void**)(context->maps)));
+    CUDA_CHECK(cudaFree((void**)(context->hist)));
 
     free(context);
 }
