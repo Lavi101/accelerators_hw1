@@ -16,7 +16,7 @@ __device__ void prefix_sum(int arr[], int arr_size) { //TODO: make sure we under
 // Make the given CDF array a map, using the given definition
 __device__ void map_calculation(int arr[], int arr_size) { //TODO: make sure it is possible to add our own functions
     for(int i=0;i<=arr_size;i++) {
-        int val = (arr[i] / (TILE_WIDTH * TILE_WIDTH)) * 255);
+        int val = (arr[i] / (TILE_WIDTH * TILE_WIDTH) * 255);
         arr[i] = val;
     }
     return;
@@ -33,8 +33,9 @@ __device__ void map_calculation(int arr[], int arr_size) { //TODO: make sure it 
 __device__ 
 void interpolate_device(uchar* maps ,uchar *in_img, uchar* out_img);
 
-__global__ void process_image_kernel(uchar *all_in, uchar *all_out, uchar *maps) {
-    int tid=threadIdx.x
+__global__ void process_image_kernel(uchar *all_in, uchar *all_out, uchar *maps,int *hist) { //TODO:
+    int tid=threadIdx.x;
+    //int hist[TILE_COUNT][TILE_COUNT][HIST_SIZE];
 
     // Each thread would calculate the histogram contribution
     // of a single row of length T in a specific tile.
@@ -43,18 +44,18 @@ __global__ void process_image_kernel(uchar *all_in, uchar *all_out, uchar *maps)
     int tileID = tid / TILE_WIDTH;
     int rowInTile = tid % TILE_WIDTH;
 
-    int numberOfTilesInRowImg = IMAGE_WIDTH / TILE_WIDTH;
+    int numberOfTilesInRowImg = IMG_WIDTH / TILE_WIDTH;
     int gridRow = tileID / numberOfTilesInRowImg;
     int gridCol = tileID % numberOfTilesInRowImg;
 
-    int offset_in_img = IMAGE_WIDTH * TILE_WIDTH * gridRow +
-     IMAGE_WIDTH * rowInTile + TILE_WIDTH * gridCol;
+    int offset_in_img = IMG_WIDTH * TILE_WIDTH * gridRow +
+     IMG_WIDTH * rowInTile + TILE_WIDTH * gridCol;
 
     // Pass on tile row and update histogram
     // We'll use maps as a histogram in the meanwhile
     for(int i=0;i<TILE_WIDTH;i++) {
         int pixelValue = all_in[offset_in_img+i];
-        atomicAdd(&(maps[gridRow][gridCol][pixel_value]),1);
+        atomicAdd(((hist) + gridRow * numberOfTilesInRowImg * HIST_SIZE + gridCol * HIST_SIZE + pixelValue),1);
     }
 
     __syncthreads();
@@ -63,10 +64,19 @@ __global__ void process_image_kernel(uchar *all_in, uchar *all_out, uchar *maps)
     // TODO: make sure. cause it won't be parallelized
     if(rowInTile == 0) {
         // Now make the histogram a CDF, by running prefix_sum
-        prefix_sum(&(maps[gridRow][gridCol]),HIST_SIZE);
+        prefix_sum(((hist) + gridRow * numberOfTilesInRowImg * HIST_SIZE + gridCol * HIST_SIZE),HIST_SIZE);
 
         // Perform map calculation for each tile
-        map_calculation(&(maps[gridRow][gridCol]),HIST_SIZE);
+        map_calculation(((hist) + gridRow * numberOfTilesInRowImg * HIST_SIZE + gridCol * HIST_SIZE),HIST_SIZE);
+    }
+
+    // Now we copy hist values to maps
+    for (int i=0;i<TILE_COUNT;i++) {
+        for (int j=0;j<TILE_COUNT;j++) {
+            for (int n=0;n<HIST_SIZE;n++) {
+                    maps[i * TILE_COUNT * HIST_SIZE + j * HIST_SIZE + n] = (unsigned char)(hist[i * TILE_COUNT * HIST_SIZE + j * HIST_SIZE + n]);
+            }
+        }
     }
 
     __syncthreads();
@@ -81,6 +91,7 @@ struct task_serial_context {
     uchar *all_in;
     uchar *all_out;
     uchar *maps;
+    int *hist;
 };
 
 /* Allocate GPU memory for a single input image and a single output image.
@@ -90,12 +101,11 @@ struct task_serial_context *task_serial_init()
 {
     auto context = new task_serial_context;
 
-    f=cudaMalloc((void**)&(context.all_in), IMAGE_WIDTH * IMAGE_WIDTH);
-    CUDA_CHECK(f)
-    f=cudaMalloc((void**)&(context.all_out), IMAGE_WIDTH * IMAGE_WIDTH);
-    CUDA_CHECK(f)
-    f=cudaMalloc((void**)&(context.maps), TILES_COUNT * TILES_COUNT * HIST_SIZE);
-    CUDA_CHECK(f)
+    cudaMalloc((void**)(context->all_in), IMG_WIDTH * IMG_WIDTH);
+    CUDA_CHECK(cudaMalloc((void**)(context->all_out), IMG_WIDTH * IMG_WIDTH));
+    CUDA_CHECK(cudaMalloc((void**)(context->maps), TILE_COUNT * TILE_COUNT * HIST_SIZE));
+    CUDA_CHECK(cudaMalloc((void**)(context->hist), TILE_COUNT * TILE_COUNT * HIST_SIZE * sizeof(int)));
+
 
 
     return context;
@@ -103,10 +113,10 @@ struct task_serial_context *task_serial_init()
 
 // Zeros the maps array of a given context
 void reset_maps_array(struct task_serial_context *context) { //TODO: is needed?
-    for (int i=0;i<TILES_COUNT;i++) {
-        for (int j=0;j<TILES_COUNT;j++) {
+    for (int i=0;i<TILE_COUNT;i++) {
+        for (int j=0;j<TILE_COUNT;j++) {
             for (int n=0;n<HIST_SIZE;n++) {
-                (*context).maps[i][j][n] = 0;
+                context->maps[i * TILE_COUNT * HIST_SIZE + j * HIST_SIZE + n] = 0;
             }
         }
     }
@@ -122,19 +132,16 @@ void task_serial_process(struct task_serial_context *context, uchar *images_in, 
     //   3. copy output from GPU memory to relevant location in images_out_gpu_serial
 
     // calculate the number of threads in one image
-    int threads_in_block = TILE_WIDTH * TILES_COUNT * TILES_COUNT;
+    int threads_in_block = TILE_WIDTH * TILE_COUNT * TILE_COUNT;
 
 
-    for (int i=0;i<NUM_IMAGES;i++) {
+    for (int i=0;i<N_IMAGES;i++) {
         reset_maps_array(context);
-        f = cudaMemcpy((*context).all_in, (images_in + i * IMG_SIZE), IMG_SIZE, cudaMemcpyHostToDevice);
-        CUDA_CHECK(f);
+        CUDA_CHECK((cudaMemcpy(context->all_in, (images_in + i * IMG_SIZE), IMG_SIZE, cudaMemcpyHostToDevice)));
 
-        f = process_image_kernel<<<1,threads_in_block>>>((*context).all_in,(*context).all_out,(*context).maps);
-        CUDA_CHECK(f);
+        process_image_kernel<<<1,threads_in_block>>>(context->all_in,context->all_out,context->maps,context->hist);
 
-        f = cudaMemcpy((*context).all_out, (images_out + i * IMG_SIZE), IMG_SIZE, cudaMemcpyDeviceToHost);
-        CUDA_CHECK(f);
+        CUDA_CHECK((cudaMemcpy(context->all_out, (images_out + i * IMG_SIZE), IMG_SIZE, cudaMemcpyDeviceToHost)));
     }
 
 }
@@ -142,12 +149,10 @@ void task_serial_process(struct task_serial_context *context, uchar *images_in, 
 /* Release allocated resources for the task-serial implementation. */
 void task_serial_free(struct task_serial_context *context)
 {
-    f=cudaFree((void**)&(context.all_in));
-    CUDA_CHECK(f);
-    f=cudaFree((void**)&(context.all_out));
-    CUDA_CHECK(f);
-    f=cudaFree((void**)&(context.maps));
-    CUDA_CHECK(f);
+    CUDA_CHECK(cudaFree((void**)(context->all_in)));
+    CUDA_CHECK(cudaFree((void**)(context->all_out)));
+    CUDA_CHECK(cudaFree((void**)(context->maps)));
+    CUDA_CHECK(cudaFree((void**)(context->hist)));
 
     free(context);
 }
