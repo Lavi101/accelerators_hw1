@@ -5,6 +5,14 @@
 
 #include <random>
 
+// remove
+#include <opencv2/opencv.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
+//
+
+using namespace cv;
+
+
 #define SQR(a) ((a) * (a))
 
 long long int distance_sqr_between_image_arrays(uchar *img_arr1, uchar *img_arr2) {
@@ -80,16 +88,16 @@ int main() {
 
     task_serial_free(ts_context);
 
-    // GPU bulk
-    printf("\n=== GPU Bulk ===\n");
-    struct gpu_bulk_context *gb_context = gpu_bulk_init();
-    t_start = get_time_msec();
-    gpu_bulk_process(gb_context, images_in, images_out_gpu_bulk);
-    t_finish = get_time_msec();
-    distance_sqr = distance_sqr_between_image_arrays(images_out_cpu, images_out_gpu_bulk);
-    printf("total time %f [msec]  distance from baseline %lld (should be zero)\n", t_finish - t_start, distance_sqr);
+    // // GPU bulk
+    // printf("\n=== GPU Bulk ===\n");
+    // struct gpu_bulk_context *gb_context = gpu_bulk_init();
+    // t_start = get_time_msec();
+    // gpu_bulk_process(gb_context, images_in, images_out_gpu_bulk);
+    // t_finish = get_time_msec();
+    // distance_sqr = distance_sqr_between_image_arrays(images_out_cpu, images_out_gpu_bulk);
+    // printf("total time %f [msec]  distance from baseline %lld (should be zero)\n", t_finish - t_start, distance_sqr);
 
-    gpu_bulk_free(gb_context);
+    // gpu_bulk_free(gb_context);
 
     return 0;
 }

@@ -5,6 +5,7 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 
+
 using namespace cv;
 
 int main(int argc,char **argv) 
@@ -19,7 +20,7 @@ int main(int argc,char **argv)
     }
 
     Mat gray_image;
-    cvtColor(image, gray_image, CV_BGR2GRAY);
+    cvtColor(image, gray_image, COLOR_BGR2GRAY);
     imwrite("grayscale.png", gray_image);
 
     Size sz = gray_image.size();
