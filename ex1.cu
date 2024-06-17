@@ -5,33 +5,19 @@
 #define IMG_SIZE (IMG_HEIGHT*IMG_WIDTH)
 
 // Make the given histogram a CDF array
-__device__ void prefix_sum(int arr[], int arr_size) { //TODO: make sure we understood correctly
+__device__ void prefix_sum(int arr[], int arr_size) { //TODO: switch to parallel
     int sum = 0;
-    for(int i=0;i<=arr_size;i++) {
+    for(int i=0;i<arr_size;i++) {
         sum += arr[i];
         arr[i] = sum;
     }
     return;
 }
 
-// Make the given CDF array a map, using the given definition
-__device__ void map_calculation(int arr[], int arr_size) { //TODO: make sure it is possible to add our own functions
-    for(int i=0;i<=arr_size;i++) {
-        // if (threadIdx.x == 0)
-        // {
-        //     printf("original val arr[%d]: %d\n",i, arr[i]);
-        // }
-        float val = (((float)arr[i] / (TILE_WIDTH * TILE_WIDTH)) * 255);
-        arr[i] = (int)val;
-        //  if (threadIdx.x == 0)
-        // {
-        //      printf("updated val arr[%d]: %d\n",i, arr[i]);
-        // }
-       
-
-    }
-    return;
-}
+// __device__ void map_calculation(int arr[], uchar* map, int arr_size) {
+    
+//     return;
+// }
 
 /**
  * Perform interpolation on a single image
@@ -45,30 +31,26 @@ __device__
 void interpolate_device(uchar* maps ,uchar *in_img, uchar* out_img);
 
 // Zeros the maps array of a given context
-__device__ void reset_maps_array(uchar *maps, int *hist) { //TODO: is needed?
-    for (int i=0;i<TILE_COUNT;i++) {
-        for (int j=0;j<TILE_COUNT;j++) {
-            for (int n=0;n<HIST_SIZE;n++) {
-                // printf("row: %d, ",i);
-                // printf("col: %d, ",j);
-                // printf("n: %d\n",n);
+__device__ void reset_maps_array(uchar *maps, int *hist) {
+    for (int i=0;i<TILE_COUNT * TILE_COUNT * HIST_SIZE;i++) {
 
-                maps[i * TILE_COUNT * HIST_SIZE + j * HIST_SIZE + n] = 0;
-                hist[i * TILE_COUNT * HIST_SIZE + j * HIST_SIZE + n] = 0;
-            }
-        }
+                maps[i] = (unsigned char)0;
+                hist[i] = (int)0;
+
     }
+
+
 }
 
 
 
-__global__ void process_image_kernel(uchar *all_in, uchar *all_out, uchar *maps,int *hist) { //TODO:
+
+__global__ void process_image_kernel(uchar *all_in, uchar *all_out, uchar *maps,int *hist) {
     int tid=threadIdx.x;
 
 
     if(tid == 0) {
         reset_maps_array(maps, hist);
-
     }
     __syncthreads();
 
@@ -82,20 +64,6 @@ __global__ void process_image_kernel(uchar *all_in, uchar *all_out, uchar *maps,
     int numberOfTilesInRowImg = IMG_WIDTH / TILE_WIDTH;
     int gridRow = tileID / numberOfTilesInRowImg;
     int gridCol = tileID % numberOfTilesInRowImg;
-
-    // // Offset to begining of pixel row
-    // int offset_in_img = IMG_WIDTH * TILE_WIDTH * gridRow +
-    //  IMG_WIDTH * rowInTile + TILE_WIDTH * gridCol;
-
-    // Pass on tile row and update histogram
-    // We'll use maps as a histogram in the meanwhile
-    // Each Thread performs calculation on 8 rows
-    // for (int k=0;k<8;k++) {
-    //     for(int i=0;i<TILE_WIDTH;i++) {
-    //         int pixelValue = all_in[offset_in_img + IMG_WIDTH * 8*k + i];
-    //         atomicAdd(((hist) + gridRow * numberOfTilesInRowImg * HIST_SIZE_MEMORY + gridCol * HIST_SIZE_MEMORY + pixelValue * sizeof(int)),1);
-    //     }
-    // }
 
     int left = TILE_WIDTH*gridCol;
     int right = TILE_WIDTH*(gridCol+1) - 1;
@@ -114,36 +82,31 @@ __global__ void process_image_kernel(uchar *all_in, uchar *all_out, uchar *maps,
     __syncthreads();
 
     // Make the histogram into a map by only the first thread in every tile
-    // TODO: make sure. cause it won't be parallelized
-    if(rowInTile == 0) {
+    if(rowInTile == 0) { //TODO: make it parallel
         // Now make the histogram a CDF, by running prefix_sum
         prefix_sum(&hist[(gridRow * numberOfTilesInRowImg + gridCol) * HIST_SIZE],HIST_SIZE);
-
-        // Perform map calculation for each tile
-        // for (int i=0;i<9;i++) {
-        //     printf("%d %d\n",i,hist[i*1000]);
-        // }
-        map_calculation(&hist[(gridRow * numberOfTilesInRowImg + gridCol) * HIST_SIZE],HIST_SIZE);
-        // for (int i=0;i<9;i++) {
-        //     printf("%d %d\n",i,hist[i*1000]);
-        // }
-    }
-
-    __syncthreads();
-
-
-    // Now we copy hist values to maps
-    for (int i=0;i<TILE_COUNT;i++) {
-        for (int j=0;j<TILE_COUNT;j++) {
-            for (int n=0;n<HIST_SIZE;n++) {
-                    maps[i * TILE_COUNT * HIST_SIZE + j * HIST_SIZE + n] = (unsigned char)(hist[i * TILE_COUNT * HIST_SIZE + j * HIST_SIZE + n]);
-            }
+        
+        // Perform map calculation for each tile        
+        // Make the given CDF array a map, using the given definition
+        for(int i=0;i<HIST_SIZE;i++) {
+            maps[(gridRow * numberOfTilesInRowImg + gridCol) * HIST_SIZE + i] = (float(hist[(gridRow * numberOfTilesInRowImg + gridCol) * HIST_SIZE + i]) * 255) / (TILE_WIDTH*TILE_WIDTH);
+            //hist[(gridRow * numberOfTilesInRowImg + gridCol) * HIST_SIZE + i] = (float(hist[(gridRow * numberOfTilesInRowImg + gridCol) * HIST_SIZE + i]) * 255) / (TILE_WIDTH*TILE_WIDTH);
         }
     }
 
+    // __syncthreads();
+    // // Now we copy hist values to maps
+    // for (int i=0;i<TILE_COUNT;i++) {
+    //     for (int j=0;j<TILE_COUNT;j++) {
+    //         for (int n=0;n<HIST_SIZE;n++) {
+    //                 maps[i * TILE_COUNT * HIST_SIZE + j * HIST_SIZE + n] = (unsigned char)(hist[i * TILE_COUNT * HIST_SIZE + j * HIST_SIZE + n]);
+    //         }
+    //     }
+    // }
+
     __syncthreads();
 
-
+    
     interpolate_device(maps, all_in, all_out);
     return; 
 }
@@ -190,7 +153,6 @@ void task_serial_process(struct task_serial_context *context, uchar *images_in, 
     // calculate the number of threads in one image
     int threads_in_block = (TILE_WIDTH * TILE_COUNT * TILE_COUNT) / 8;
 
-    // Change back to N_IMAGES
     for (int i=0;i<N_IMAGES;i++) {
         CUDA_CHECK((cudaMemcpy(context->all_in, (images_in + i * IMG_SIZE), IMG_SIZE, cudaMemcpyHostToDevice)));
 
@@ -220,6 +182,7 @@ __global__ void bulk_process_image_kernel(uchar *all_in, uchar *all_out, uchar *
     int tid=threadIdx.x;
     int bid=blockIdx.x;
 
+
     //int hist[TILE_COUNT][TILE_COUNT][HIST_SIZE];
 
     // Each thread would calculate the histogram contribution
@@ -227,54 +190,55 @@ __global__ void bulk_process_image_kernel(uchar *all_in, uchar *all_out, uchar *
 
     // Calculate offset of this thread in the image pixels array
     int imgID = bid;
-    int tileID = tid / TILE_WIDTH;
-    int rowInTile = tid % TILE_WIDTH;
+    int tileID = tid / 8;
+    int rowInTile = tid % 8;
 
     int numberOfTilesInRowImg = IMG_WIDTH / TILE_WIDTH;
     int gridRow = tileID / numberOfTilesInRowImg;
     int gridCol = tileID % numberOfTilesInRowImg;
 
-    int offset_in_img = IMG_WIDTH * TILE_WIDTH * gridRow +
-     IMG_WIDTH * rowInTile + TILE_WIDTH * gridCol + imgID * IMG_SIZE;
 
-    // Pass on tile row and update histogram
-    // We'll use maps as a histogram in the meanwhile
-    for(int i=0;i<TILE_WIDTH;i++) {
-        int pixelValue = all_in[offset_in_img+i];
-        atomicAdd(((hist) + imgID * TILE_COUNT * TILE_COUNT * HIST_SIZE 
-        + gridRow * numberOfTilesInRowImg * HIST_SIZE + gridCol * HIST_SIZE + pixelValue),1);
+    int left = TILE_WIDTH*gridCol;
+    int right = TILE_WIDTH*(gridCol+1) - 1;
+    int top = TILE_WIDTH*gridRow;
+    int bottom = TILE_WIDTH*(gridRow+1) - 1;
+
+      if(tid == 0) {
+        reset_maps_array(&maps[imgID*numberOfTilesInRowImg*numberOfTilesInRowImg*HIST_SIZE], &hist[imgID*numberOfTilesInRowImg*numberOfTilesInRowImg*HIST_SIZE]);
     }
-
     __syncthreads();
 
-    // Make the histogram into a map by only the first thread in every tile
-    // TODO: make sure. cause it won't be parallelized
-    if(rowInTile == 0) {
-        // Now make the histogram a CDF, by running prefix_sum
-        prefix_sum(((hist) + imgID * TILE_COUNT * TILE_COUNT * HIST_SIZE 
-        + gridRow * numberOfTilesInRowImg * HIST_SIZE + gridCol * HIST_SIZE),HIST_SIZE);
-
-        // Perform map calculation for each tile
-        map_calculation(((hist) + imgID * TILE_COUNT * TILE_COUNT * HIST_SIZE
-        + gridRow * numberOfTilesInRowImg * HIST_SIZE + gridCol * HIST_SIZE),HIST_SIZE);
-    }
-
-    // Now we copy hist values to maps
-    for (int i=0;i<TILE_COUNT;i++) {
-        for (int j=0;j<TILE_COUNT;j++) {
-            for (int n=0;n<HIST_SIZE;n++) {
-                    maps[imgID * TILE_COUNT * TILE_COUNT * HIST_SIZE 
-                    + i * TILE_COUNT * HIST_SIZE + j * HIST_SIZE + n] = (unsigned char)(
-                        hist[imgID * TILE_COUNT * TILE_COUNT * HIST_SIZE
-                        + i * TILE_COUNT * HIST_SIZE + j * HIST_SIZE + n]);
-            }
+    for (int y = 0; y < 8; y++)
+    {
+        for (int x=left; x<=right; x++) {
+            uchar *row = all_in + imgID*IMG_SIZE + (top + rowInTile*8 + y) * IMG_WIDTH ;
+            int val = row[x];
+            atomicAdd((&(hist[imgID*numberOfTilesInRowImg*numberOfTilesInRowImg*HIST_SIZE + (gridRow * numberOfTilesInRowImg + gridCol) * HIST_SIZE + val])),1);
         }
     }
 
     __syncthreads();
 
+    // Make the histogram into a map by only the first thread in every tile
+    if(rowInTile == 0) {
+        // Now make the histogram a CDF, by running prefix_sum
+        prefix_sum(&hist[imgID*numberOfTilesInRowImg*numberOfTilesInRowImg*HIST_SIZE + (gridRow * numberOfTilesInRowImg + gridCol) * HIST_SIZE],HIST_SIZE);
+        
+        // Perform map calculation for each tile        
+        // Make the given CDF array a map, using the given definition
+        for(int i=0;i<HIST_SIZE;i++) {
+            maps[imgID*numberOfTilesInRowImg*numberOfTilesInRowImg*HIST_SIZE + (gridRow * numberOfTilesInRowImg + gridCol) * HIST_SIZE + i] = 
+            (float(hist[imgID*numberOfTilesInRowImg*numberOfTilesInRowImg*HIST_SIZE + (gridRow * numberOfTilesInRowImg + gridCol) * HIST_SIZE + i]) * 255) / (TILE_WIDTH*TILE_WIDTH);
+            
+        }
+    }
+ 
+    __syncthreads();
 
-    interpolate_device(maps, all_in, all_out);
+    interpolate_device(&maps[imgID*numberOfTilesInRowImg*numberOfTilesInRowImg*HIST_SIZE], (all_in + imgID*IMG_SIZE), (all_out + imgID*IMG_SIZE));
+
+    __syncthreads();
+
     return; 
 }
 
@@ -296,7 +260,9 @@ struct gpu_bulk_context *gpu_bulk_init()
     CUDA_CHECK(cudaMalloc((void**) &(context->all_in), IMG_WIDTH * IMG_WIDTH * N_IMAGES));
     CUDA_CHECK(cudaMalloc((void**) &(context->all_out), IMG_WIDTH * IMG_WIDTH * N_IMAGES));
     CUDA_CHECK(cudaMalloc((void**) &(context->maps), TILE_COUNT * TILE_COUNT * HIST_SIZE * N_IMAGES));
+    // CUDA_CHECK(cudaMemset((context->maps),(unsigned char)0,TILE_COUNT * TILE_COUNT * HIST_SIZE * N_IMAGES));
     CUDA_CHECK(cudaMalloc((void**) &(context->hist), TILE_COUNT * TILE_COUNT * HIST_SIZE * sizeof(int) * N_IMAGES));
+    // CUDA_CHECK(cudaMemset((context->hist),0,TILE_COUNT * TILE_COUNT * HIST_SIZE * sizeof(int) * N_IMAGES));
 
 
     return context;
@@ -307,11 +273,11 @@ struct gpu_bulk_context *gpu_bulk_init()
 void gpu_bulk_process(struct gpu_bulk_context *context, uchar *images_in, uchar *images_out)
 {
     // calculate the number of threads in one image
-    int threads_in_block = TILE_WIDTH * TILE_COUNT * TILE_COUNT;
+    int threads_in_block = (TILE_WIDTH * TILE_COUNT * TILE_COUNT) / 8;
 
     CUDA_CHECK((cudaMemcpy(context->all_in, images_in, (N_IMAGES * IMG_SIZE), cudaMemcpyHostToDevice)));
 
-    process_image_kernel<<<N_IMAGES,threads_in_block>>>(context->all_in,context->all_out,context->maps,context->hist);
+    bulk_process_image_kernel<<<N_IMAGES,threads_in_block>>>(context->all_in,context->all_out,context->maps,context->hist);
 
     CUDA_CHECK((cudaMemcpy(images_out, context->all_out, (N_IMAGES * IMG_SIZE), cudaMemcpyDeviceToHost)));
     
