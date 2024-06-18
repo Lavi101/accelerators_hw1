@@ -5,31 +5,21 @@
 
 #include <random>
 
+// remove
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
-
+//
 
 using namespace cv;
+
 
 #define SQR(a) ((a) * (a))
 
 long long int distance_sqr_between_image_arrays(uchar *img_arr1, uchar *img_arr2) {
     long long int distance_sqr = 0;
-    uchar *image_out = new uchar[IMG_WIDTH * IMG_HEIGHT];
-
     for (int i = 0; i < N_IMAGES * IMG_WIDTH * IMG_HEIGHT; i++) {
-        float dist = SQR(img_arr1[i] - img_arr2[i]);
         distance_sqr += SQR(img_arr1[i] - img_arr2[i]);
-        image_out[(i%(IMG_WIDTH * IMG_HEIGHT))==183] = SQR(img_arr1[i] - img_arr2[i]);
-        if (dist != 0.0) {
-            // printf("IMAGE_ID = %d, ",i/(IMG_WIDTH * IMG_HEIGHT));
-            // printf("index in picture [%d,%d]\n", (i%(IMG_WIDTH * IMG_HEIGHT))/IMG_WIDTH,(i%(IMG_WIDTH * IMG_HEIGHT))%IMG_WIDTH);
-            // printf("their val = %d, our val = %d\n",img_arr1[i],img_arr2[i]);
-        }
     }
-    Size sz(IMG_WIDTH,IMG_HEIGHT);
-    Mat result(sz, CV_8UC1, image_out);
-    imwrite("result_diff.png", result);
     return distance_sqr;
 }
 
@@ -98,16 +88,16 @@ int main() {
 
     task_serial_free(ts_context);
 
-    // GPU bulk
-    printf("\n=== GPU Bulk ===\n");
-    struct gpu_bulk_context *gb_context = gpu_bulk_init();
-    t_start = get_time_msec();
-    gpu_bulk_process(gb_context, images_in, images_out_gpu_bulk);
-    t_finish = get_time_msec();
-    distance_sqr = distance_sqr_between_image_arrays(images_out_cpu, images_out_gpu_bulk);
-    printf("total time %f [msec]  distance from baseline %lld (should be zero)\n", t_finish - t_start, distance_sqr);
+    // // GPU bulk
+    // printf("\n=== GPU Bulk ===\n");
+    // struct gpu_bulk_context *gb_context = gpu_bulk_init();
+    // t_start = get_time_msec();
+    // gpu_bulk_process(gb_context, images_in, images_out_gpu_bulk);
+    // t_finish = get_time_msec();
+    // distance_sqr = distance_sqr_between_image_arrays(images_out_cpu, images_out_gpu_bulk);
+    // printf("total time %f [msec]  distance from baseline %lld (should be zero)\n", t_finish - t_start, distance_sqr);
 
-    gpu_bulk_free(gb_context);
+    // gpu_bulk_free(gb_context);
 
     return 0;
 }
